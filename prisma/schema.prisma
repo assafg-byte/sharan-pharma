@@ -1,0 +1,291 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Employee {
+  id              Int                   @id @default(autoincrement())
+  name            String
+  color           String
+  phone4          String                @default("")   // last 4 digits of mobile
+  passwordHash    String                @default("")   // bcrypt hash
+  role            String                @default("EMPLOYEE") // "EMPLOYEE" | "MANAGER"
+  gender          String                @default("M")  // "M" | "F"
+  dateOfBirth     String                @default("")   // "YYYY-MM-DD"
+  employeeType    String                @default("FULL_TIME") // "FULL_TIME" | "PART_TIME"
+  archived        Boolean               @default(false) // soft delete — history preserved, login blocked
+  shifts          Shift[]
+  attendance      Attendance[]
+  timeOffRequests TimeOffRequest[]
+  availability    PartTimeAvailability[]
+  campusSessions  CampusSession[]
+  campusAttempts  CampusQuestionAttempt[]
+  campusProgress  CampusProgress[]
+  leafletTopicOrders LeafletTopicOrder[]
+  taskViews       TaskView[]
+  breakSelections BreakSelection[]
+}
+
+// Daily check-in checklist questions — shown to employees at shift start.
+// Managed by managers in the Campus dashboard.
+model ChecklistItem {
+  id               Int    @id @default(autoincrement())
+  order            Int    @default(0)
+  text             String // supports {name} and {male|female} placeholders
+  delaySec         Int    @default(0)  // countdown before the confirm button unlocks
+  pendingLabel     String @default("") // button label during countdown
+  confirmedLabel   String @default("") // single confirm button label after countdown
+  confirmedOptions String @default("") // newline-separated multi-option labels (overrides confirmedLabel)
+  countOnYes       Boolean @default(false) // plain yes/no item: "yes" reveals an inline count field, then notifies the manager
+}
+
+model LeafletTopicOrder {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  topicKey   String
+  order      Int
+  @@unique([employeeId, topicKey])
+}
+
+model Shift {
+  id            Int      @id @default(autoincrement())
+  employeeId    Int
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  dayOfWeek     Int      // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu
+  startHour     Float    // 8.0, 8.5, 9.0 ... 15.5
+  durationHours Float    // 1..8
+  weekKey       String   @default("") // "YYYY-MM-DD" of the week's Sunday
+}
+
+model Task {
+  id          Int      @id @default(autoincrement())
+  title       String
+  description String   @default("")
+  dueDate     String   @default("")
+  priority    String   @default("MEDIUM") // LOW | MEDIUM | HIGH
+  status      String   @default("TODO")   // TODO | IN_PROGRESS | DONE
+  order       Int      @default(0)
+  assigneeIds String   @default("")       // comma-separated Employee IDs, e.g. "3,7"
+  createdAt   DateTime @default(now())
+  views       TaskView[]
+}
+
+// First time an assigned employee was shown a task (daily popup or Kanban).
+// One row per (task, employee) — first view wins; never updated afterwards.
+model TaskView {
+  id         Int      @id @default(autoincrement())
+  taskId     Int
+  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  viewedAt   DateTime @default(now())
+
+  @@unique([taskId, employeeId])
+}
+
+// Manager free-text note per weekday, per week — shown as the top row of the
+// edit grid. Independent per week (not a recurring template).
+model DayNote {
+  id        Int      @id @default(autoincrement())
+  weekKey   String   // "YYYY-MM-DD" of the week's Sunday
+  dayOfWeek Int      // 0=Sun … 4=Thu
+  text      String   @default("")
+  updatedAt DateTime @updatedAt
+
+  @@unique([weekKey, dayOfWeek])
+}
+
+// Per-item notification feed. recipientId is null for the shared manager inbox.
+// type: TIME_OFF_PENDING | AVAILABILITY_UPDATED | SESSION_ABANDONED |
+//       TASK_DUE_UNVIEWED | TASK_VIEWED
+model Notification {
+  id                Int      @id @default(autoincrement())
+  recipientType     String   // "MANAGER" | "EMPLOYEE"
+  recipientId       Int?     // Employee.id when recipientType = "EMPLOYEE"
+  type              String
+  description       String
+  entityId          Int?     // related entity id (taskId / timeOffRequestId / campusSessionId)
+  subjectEmployeeId Int?     // the employee this notification is about (dedupe key with type+entityId)
+  read              Boolean  @default(false)
+  // "נקה היסטוריה" hides rows instead of deleting them: the sweeps dedupe on
+  // (type, entityId, subjectEmployeeId), so a deleted row would be re-created
+  // on the very next poll for anything still over its threshold.
+  cleared           Boolean  @default(false)
+  createdAt         DateTime @default(now())
+}
+
+model Attendance {
+  id           Int                @id @default(autoincrement())
+  employeeId   Int
+  employee     Employee           @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date         String             // "YYYY-MM-DD"
+  checkInTime  DateTime?
+  checkOutTime DateTime?
+  weekKey      String             @default("")
+  breaks       AttendanceBreak[]
+}
+
+model AttendanceBreak {
+  id           Int        @id @default(autoincrement())
+  attendanceId Int
+  attendance   Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  breakStart   DateTime
+  breakEnd     DateTime?  // null = ongoing break
+  expectedEnd  DateTime?  // null = employee said they don't know return time
+}
+
+model TimeOffRequest {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date       String   // "YYYY-MM-DD" — start date
+  toDate     String?  // "YYYY-MM-DD" — end date (null = single day)
+  type       String   @default("FULL_DAY") // "FULL_DAY" | "HALF_DAY" | "PART_TIME"
+  status     String   @default("PENDING")  // "PENDING" | "APPROVED" | "REJECTED"
+  notes      String   @default("")
+  createdAt  DateTime @default(now())
+}
+
+model PartTimeAvailability {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  dayOfWeek  Int      // 0=Sun … 4=Thu
+  startHour  Float    // e.g. 9.0
+  endHour    Float    // e.g. 14.0
+  available  Boolean  @default(true)
+  updatedAt  DateTime @updatedAt
+}
+
+model ManagerCoverage {
+  id                Int     @id @default(autoincrement())
+  weekKey           String? // NULL = applies to every week; "YYYY-MM-DD" = specific week only
+  coveringManagerId Int                 // Employee.id with role = "MANAGER"
+  coveredManagerId  Int                 // Employee.id with role = "MANAGER"
+  startHour         Float               // e.g. 11.5 for 11:30
+  endHour           Float               // e.g. 13.5 for 13:30
+  daysOfWeek        String @default("0,1,2,3,4") // comma-separated 0-4
+}
+
+model CampusSettings {
+  id                  Int      @id @default(1)
+  enabled             Boolean  @default(false)
+  questionsPerSession Int      @default(3)
+  leafletLocked       Boolean  @default(true) // Mounjaro leaflet: topics visible, content hidden (manager toggle)
+  updatedAt           DateTime @updatedAt
+}
+
+model CampusQuestion {
+  id             Int                     @id @default(autoincrement())
+  text           String
+  type           String                  // "SINGLE_CHOICE" | "TRUE_FALSE" | "MULTI_SELECT" | "REPORT_DRAG_DROP"
+  optionA        String
+  optionB        String
+  optionC        String                  @default("")  // empty for TRUE_FALSE
+  optionD        String                  @default("")  // empty for TRUE_FALSE
+  correctAnswers String                  // "A" | "B" | "A,C" (comma-separated)
+  explanation    String
+  reportData     Json?                   // REPORT_DRAG_DROP only: { scenario, formTitle?, sections }
+  updatedDate    String                  @default("") // "YYYY-MM-DD", manager-set — shown to employees
+  source         String                  @default("") // free text, manager-only — never shown to employees
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  attempts       CampusQuestionAttempt[]
+  progress       CampusProgress[]
+}
+
+model CampusSession {
+  id          Int                     @id @default(autoincrement())
+  employeeId  Int
+  employee    Employee                @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date        String                  // "YYYY-MM-DD"
+  startedAt   DateTime                @default(now())
+  completedAt DateTime?               // null = in-progress or abandoned (startedAt < now - 24h)
+  attempts    CampusQuestionAttempt[]
+}
+
+model CampusQuestionAttempt {
+  id                Int            @id @default(autoincrement())
+  sessionId         Int
+  session           CampusSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionId        Int
+  question          CampusQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  employeeId        Int
+  employee          Employee       @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  answeredCorrectly Boolean
+  blankAttempts     Json?          // REPORT_DRAG_DROP only: { [sectionId]: attemptCount }
+  answeredAt        DateTime       @default(now())
+}
+
+model CampusProgress {
+  id             Int            @id @default(autoincrement())
+  employeeId     Int
+  questionId     Int
+  nextReviewDate String         // "YYYY-MM-DD"
+  intervalDays   Int            @default(1)
+  employee       Employee       @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  question       CampusQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, questionId])
+}
+
+// Manager-configured break window (start–end range) that the daily checklist's
+// break-time picker generates 30-minute slots from. Singleton row, id fixed to 1.
+model BreakSlotConfig {
+  id        Int      @id @default(1)
+  startHour Float    @default(12) // e.g. 12.0
+  endHour   Float    @default(16) // e.g. 16.0 — last selectable slot starts at endHour - 0.5
+  updatedAt DateTime @updatedAt
+}
+
+// Manager-configurable traffic-light thresholds for the weekly schedule table:
+// the minimum headcount at which a cell turns orange / yellow / green (fewer
+// than oneMin = red). The colors themselves are fixed (lib/trafficLight.ts).
+// Singleton row, id fixed to 1.
+model TrafficLightConfig {
+  id        Int      @id @default(1)
+  oneMin    Int      @default(1) // orange from this many employees
+  twoMin    Int      @default(2) // yellow from this many employees
+  fullMin   Int      @default(3) // green from this many employees
+  updatedAt DateTime @updatedAt
+}
+
+// One employee's chosen break slot for a given date. Two unique constraints
+// enforce both rules at once: nobody double-books a half-hour slot, and each
+// employee has at most one break per day (re-picking replaces it).
+model BreakSelection {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date       String   // "YYYY-MM-DD"
+  startHour  Float    // e.g. 13.0 = the 13:00–13:30 slot
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([date, startHour])
+  @@unique([date, employeeId])
+}
+
+// Lilly PSP (Omvoh / Ebglyss) editable content — one row per saved version.
+// The latest row is the live content; restoring copies an old row forward.
+model PspContentVersion {
+  id        Int      @id @default(autoincrement())
+  data      String   // JSON — see lib/psp/types.ts PspContent
+  editor    String   @default("")
+  note      String   @default("")
+  createdAt DateTime @default(now())
+}
+
+// Nucala (GSK) interactive call script — one row per saved version (same scheme as PspContentVersion).
+model NucalaContentVersion {
+  id        Int      @id @default(autoincrement())
+  data      String   // JSON — see lib/nucala/types.ts NucalaContent
+  editor    String   @default("")
+  note      String   @default("")
+  createdAt DateTime @default(now())
+}
